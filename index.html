@@ -68,7 +68,63 @@ input:focus,select:focus,textarea:focus{border-color:var(--blue)!important;box-s
 </div>
 <div class="modal" id="modal"><div class="modalbox"><div class="modalhead"><h2 id="modalTitle" style="margin:0">جزئیات انیمه</h2><button class="close" id="closeModal">بستن ✕</button></div><div id="modalContent"></div></div></div>
 <div class="toast" id="toast"></div>
-<script>
+<script>\n
+// Supabase connection (Publishable key only; never put service_role/secret keys in this file)
+const SUPABASE_URL = 'https://ldzkjzozhibvjbvcndcx.supabase.co';
+const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_geZqWS8-g9tzB8fiJpmMVw_4U06L89Q';
+const SUPABASE_REST = SUPABASE_URL + '/rest/v1';
+let cloudReady = false;
+async function sbRequest(path, options={}) {
+  const response = await fetch(SUPABASE_REST + path, {
+    ...options,
+    headers: {
+      apikey: SUPABASE_PUBLISHABLE_KEY,
+      Authorization: 'Bearer ' + SUPABASE_PUBLISHABLE_KEY,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  const body = await response.text();
+  let data = null; try { data = body ? JSON.parse(body) : null; } catch {}
+  if (!response.ok) throw new Error(data?.message || data?.hint || ('Supabase HTTP ' + response.status));
+  return data;
+}
+function fromCloudRow(r) {
+  return {
+    id: r.id, cloudId: r.id,
+    title: r.title_en || r.title || '',
+    fa: r.title_fa || r.title || '',
+    year: Number(r.release_year || r.year || 0),
+    score: Number(r.score || 0),
+    episodes: Number(r.episodes_count || r.episode_count || r.episodes || 0),
+    genre: Array.isArray(r.genres) ? r.genres : (typeof r.genres === 'string' ? r.genres.split(/[,،]/).map(x=>x.trim()).filter(Boolean) : []),
+    type: r.type || 'series', status: r.status || 'پایان‌یافته',
+    img: r.poster_url || r.img || 'https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom',
+    desc: r.synopsis_fa || r.description || ''
+  };
+}
+function toCloudRow(a) {
+  return {
+    title_en: a.title, title_fa: a.fa, release_year: a.year, score: a.score,
+    poster_url: a.img, synopsis_fa: a.desc,
+    genres: a.genre, type: a.type, status: a.status
+  };
+}
+async function loadCloudAnime() {
+  try {
+    const rows = await sbRequest('/anime?select=*&order=id.asc');
+    const cloud = (rows || []).map(fromCloudRow);
+    // Keep starter cards; replace locally-created test records with the shared cloud catalog.
+    anime = [...starter, ...cloud];
+    cloudReady = true;
+    render();
+  } catch (err) {
+    console.warn('Supabase read failed:', err);
+    cloudReady = false;
+    // Existing local version remains usable if database read access isn't configured yet.
+  }
+}
+
 const starter=[
 {id:1,title:'Solo Leveling',fa:'سولو لولینگ',year:2024,score:9.4,genre:['اکشن','فانتزی'],type:'series',status:'پایان فصل ۲',episodes:25,img:'https://cdn.myanimelist.net/images/anime/1806/126216l.jpg',desc:'داستان سونگ جین‌وو، شکارچی‌ای که پس از تجربه‌ای مرگبار توانایی ویژه‌ای برای قوی‌تر شدن به دست می‌آورد.'},
 {id:2,title:'Jujutsu Kaisen',fa:'جوجوتسو کایسن',year:2020,score:9.2,genre:['اکشن','فانتزی'],type:'series',status:'ادامه دارد',episodes:47,img:'https://cdn.myanimelist.net/images/anime/1171/109222l.jpg',desc:'یووجی ایتادوری وارد دنیایی از نفرین‌ها و جادوگران می‌شود.'},
@@ -119,9 +175,30 @@ $('adminBtn').onclick=()=>{
  function resetForm(){editingId=null;form.reset();form.elements.year.value=2025;form.elements.score.value=8.5;form.elements.genre.value='اکشن، فانتزی';$('saveAnimeBtn').textContent='＋ افزودن به آرشیو';$('cancelEditBtn').style.display='none'}
  function refreshList(){ $('adminList').innerHTML=anime.map(a=>`<div class="admin-row"><div><b>${String(a.fa||a.title).replace(/[<>]/g,'')}</b><small>${String(a.title).replace(/[<>]/g,'')} · ${a.year} · ★ ${a.score}</small></div><button class="edit-btn" data-edit="${a.id}">ویرایش</button><button class="danger" data-delete="${a.id}">حذف</button></div>`).join('')||'<p class="sub">آرشیو خالی است.</p>'; }
  refreshList();
- form.onsubmit=e=>{e.preventDefault();const f=new FormData(form);const item={id:editingId??Date.now(),title:String(f.get('title')).trim(),fa:String(f.get('fa')).trim(),year:Number(f.get('year')),score:Number(f.get('score')),episodes:Number(f.get('episodes'))||0,genre:String(f.get('genre')).split(/[,،]/).map(x=>x.trim()).filter(Boolean),type:f.get('type'),status:String(f.get('status')),img:String(f.get('img')).trim()||'https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom',desc:String(f.get('desc')).trim()};if(editingId!==null){anime=anime.map(a=>a.id===editingId?item:a);toast('اطلاعات انیمه ویرایش شد ✿')}else{anime.push(item);toast('انیمه به آرشیو اضافه شد ✿')}save();render();refreshList();resetForm()};
+ form.onsubmit=async e=>{e.preventDefault();const f=new FormData(form);const item={id:editingId??Date.now(),title:String(f.get('title')).trim(),fa:String(f.get('fa')).trim(),year:Number(f.get('year')),score:Number(f.get('score')),episodes:Number(f.get('episodes'))||0,genre:String(f.get('genre')).split(/[,،]/).map(x=>x.trim()).filter(Boolean),type:f.get('type'),status:String(f.get('status')),img:String(f.get('img')).trim()||'https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom',desc:String(f.get('desc')).trim()};
+ try {
+   if (cloudReady) {
+     const payload=toCloudRow(item);
+     if(editingId!==null) {
+       const old=anime.find(a=>a.id===editingId);
+       if(old?.cloudId) await sbRequest('/anime?id=eq.'+encodeURIComponent(old.cloudId),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(payload)});
+       else { await sbRequest('/anime',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify(payload)}); }
+     } else {
+       await sbRequest('/anime',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify(payload)});
+     }
+     await loadCloudAnime();
+     toast('تغییرات در Supabase ذخیره شد ✿');
+   } else {
+     if(editingId!==null){anime=anime.map(a=>a.id===editingId?item:a);toast('ذخیره آنلاین فعال نیست؛ تغییر فقط محلی است')}
+     else{anime.push(item);toast('اتصال دیتابیس آماده نیست؛ انیمه فقط محلی اضافه شد')}
+   }
+   save();render();refreshList();resetForm();
+ } catch(err) {
+   alert('ذخیره در Supabase انجام نشد. احتمالاً دسترسی RLS یا نام ستون‌ها نیاز به تنظیم دارد.\n\n'+err.message);
+ }
+};
  $('cancelEditBtn').onclick=resetForm;
- $('adminList').onclick=e=>{const eb=e.target.closest('[data-edit]'),db=e.target.closest('[data-delete]');if(eb){const a=anime.find(x=>x.id===Number(eb.dataset.edit));if(!a)return;editingId=a.id;for(const k of ['title','fa','year','score','episodes','status','img','type','desc'])form.elements[k].value=a[k]??'';form.elements.genre.value=(a.genre||[]).join('، ');$('saveAnimeBtn').textContent='ذخیره‌ی ویرایش';$('cancelEditBtn').style.display='inline-block';form.scrollIntoView({behavior:'smooth',block:'start'});return}if(db){const id=Number(db.dataset.delete);const a=anime.find(x=>x.id===id);if(!a)return;if(!confirm(`«${a.fa||a.title}» حذف شود؟`))return;anime=anime.filter(x=>x.id!==id);favorites=favorites.filter(x=>x!==id);watchlist=watchlist.filter(x=>x!==id);save();render();refreshList();if(editingId===id)resetForm();toast('عنوان حذف شد')}};
+ $('adminList').onclick=e=>{const eb=e.target.closest('[data-edit]'),db=e.target.closest('[data-delete]');if(eb){const a=anime.find(x=>x.id===Number(eb.dataset.edit));if(!a)return;editingId=a.id;for(const k of ['title','fa','year','score','episodes','status','img','type','desc'])form.elements[k].value=a[k]??'';form.elements.genre.value=(a.genre||[]).join('، ');$('saveAnimeBtn').textContent='ذخیره‌ی ویرایش';$('cancelEditBtn').style.display='inline-block';form.scrollIntoView({behavior:'smooth',block:'start'});return}if(db){const id=Number(db.dataset.delete);const a=anime.find(x=>x.id===id);if(!a)return;if(!confirm(`«${a.fa||a.title}» حذف شود؟`))return;(async()=>{try{const row=anime.find(x=>x.id===id);if(cloudReady&&row?.cloudId){await sbRequest('/anime?id=eq.'+encodeURIComponent(row.cloudId),{method:'DELETE',headers:{Prefer:'return=minimal'}});await loadCloudAnime()}else{anime=anime.filter(x=>x.id!==id)}favorites=favorites.filter(x=>x!==id);watchlist=watchlist.filter(x=>x!==id);save();render();refreshList();if(editingId===id)resetForm();toast('عنوان حذف شد')}catch(err){alert('حذف آنلاین انجام نشد: '+err.message)}})()}};
  $('exportBtn').onclick=()=>{const blob=new Blob([JSON.stringify({anime:anime.filter(a=>!starter.some(s=>s.id===a.id)),favorites,watchlist},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='anime-bloom-backup.json';a.click();URL.revokeObjectURL(url);toast('نسخه پشتیبان آماده شد')};
  $('importBtn').onclick=()=>$('importFile').click();
  $('importFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());if(!data||!Array.isArray(data.anime))throw new Error('bad');if(!confirm('اطلاعات پشتیبان به آرشیو اضافه شود؟'))return;const ids=new Set(anime.map(a=>a.id));data.anime.forEach(a=>{if(a&&a.title&&!ids.has(a.id)){anime.push({...a,id:Number(a.id)||Date.now()+Math.random(),genre:Array.isArray(a.genre)?a.genre:[]})}});if(Array.isArray(data.favorites))favorites=[...new Set([...favorites,...data.favorites])];if(Array.isArray(data.watchlist))watchlist=[...new Set([...watchlist,...data.watchlist])];save();render();refreshList();toast('بازیابی انجام شد')}catch(_){alert('فایل پشتیبان معتبر نیست.')}finally{e.target.value=''}};
