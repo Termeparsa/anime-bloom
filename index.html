@@ -22,7 +22,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--blue)!important;box-s
 .admin-row{display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:8px;padding:10px 4px;border-bottom:1px solid var(--line)}
 .admin-row small{display:block;color:var(--muted);margin-top:3px}
 .admin-row .danger{border-color:#853c67;color:#ffabd5}
-.admin-note{font-size:12px;color:var(--muted);line-height:1.9;background:#071126;padding:10px;border-radius:10px}
+.admin-note{font-size:12px;color:var(--muted);line-height:1.9;background:#071126;padding:10px;border-radius:10px}.episode-row{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;padding:10px;margin:8px 0;background:#071126;border:1px solid var(--line);border-radius:10px}.episode-row small{display:block;color:var(--muted);overflow-wrap:anywhere}.episode-actions{display:flex;gap:6px;flex-wrap:wrap}.episode-actions button{border:1px solid #244a70;background:#0c203b;color:#e8f4ff;border-radius:8px;padding:7px}.player-wrap{margin-top:16px;background:#020611;border-radius:12px;overflow:hidden}.player-wrap video,.player-wrap iframe{width:100%;aspect-ratio:16/9;border:0;display:block}.season-block{border:1px solid var(--line);border-radius:12px;padding:12px;margin:10px 0}
 @media(max-width:430px){.admin-row{grid-template-columns:1fr auto}.admin-row .edit-btn{grid-column:2}}
 
 </style>
@@ -92,7 +92,7 @@ async function sbRequest(path, options={}) {
 }
 function fromCloudRow(r) {
   return {
-    id: r.id, cloudId: r.id,
+    id: 1000000 + Number(r.id || 0), cloudId: r.id,
     title: r.title_en || r.title || '',
     fa: r.title_fa || r.title || '',
     year: Number(r.release_year || r.year || 0),
@@ -105,24 +105,58 @@ function fromCloudRow(r) {
   };
 }
 function toCloudRow(a) {
-  return {
-    title_en: a.title, title_fa: a.fa, release_year: a.year, score: a.score,
-    poster_url: a.img, synopsis_fa: a.desc,
-    genres: a.genre, type: a.type, status: a.status
-  };
+  // Only use columns confirmed in the user's anime table.
+  return { title_en:a.title, title_fa:a.fa, release_year:a.year, score:a.score, poster_url:a.img, synopsis_fa:a.desc };
 }
 async function loadCloudAnime() {
   try {
     const rows = await sbRequest('/anime?select=*&order=id.asc');
     const cloud = (rows || []).map(fromCloudRow);
     // Keep starter cards; replace locally-created test records with the shared cloud catalog.
-    anime = [...starter, ...cloud];
+    const local = JSON.parse(localStorage.getItem('bloomAnime') || '[]');
+    const localOnly = local.filter(a => !starter.some(s => s.id === a.id) && !cloud.some(c => c.title === a.title));
+    anime = applyOverrides([...starter, ...localOnly, ...cloud]);
     cloudReady = true;
     render();
   } catch (err) {
     console.warn('Supabase read failed:', err);
     cloudReady = false;
     // Existing local version remains usable if database read access isn't configured yet.
+  }
+}
+
+
+// Load season/episode records from Supabase when the read policies permit it.
+// Local records remain available as a fallback for the admin tools.
+async function loadCloudEpisodes() {
+  try {
+    const [seasonRows, episodeRows] = await Promise.all([
+      sbRequest('/seasons?select=*&order=season_number.asc'),
+      sbRequest('/episodes?select=*&order=episode_number.asc')
+    ]);
+    const cloudSeasons = (seasonRows || []).map(r => ({
+      id: 'cloud-season-' + r.id,
+      cloudId: r.id,
+      animeId: 1000000 + Number(r.anime_id || 0),
+      cloudAnimeId: r.anime_id,
+      number: Number(r.season_number || 1),
+      title: r.title_fa || ''
+    }));
+    const cloudEpisodes = (episodeRows || []).map(r => ({
+      id: 'cloud-episode-' + r.id,
+      cloudId: r.id,
+      seasonId: 'cloud-season-' + r.season_id,
+      number: Number(r.episode_number || 1),
+      title: r.title_fa || '',
+      description: r.synopsis_fa || '',
+      subtitle: r.subtitle_fa || '',
+      dub: r.dub_fa || '',
+      videoUrl: r.authorized_stream_url || ''
+    }));
+    seasons = [...seasons.filter(x => !String(x.id).startsWith('cloud-season-')), ...cloudSeasons];
+    episodesData = [...episodesData.filter(x => !String(x.id).startsWith('cloud-episode-')), ...cloudEpisodes];
+  } catch (err) {
+    console.warn('Supabase seasons/episodes read failed; using local records:', err);
   }
 }
 
@@ -159,25 +193,50 @@ const starter=[
 {id:29,title:'Cowboy Bebop',fa:'کابوی بیباپ',year:1998,score:8.8,genre:['اکشن','علمی تخیلی'],type:'series',status:'پایان‌یافته',episodes:26,img:'https://cdn.myanimelist.net/images/anime/4/19644l.jpg',desc:'گروهی جایزه‌بگیر در فضا با گذشته و ماجراهای تازه روبه‌رو می‌شوند.'},
 {id:30,title:'Steins;Gate',fa:'اشتاینز؛گیت',year:2011,score:9.1,genre:['علمی تخیلی','معمایی'],type:'series',status:'پایان‌یافته',episodes:24,img:'https://cdn.myanimelist.net/images/anime/5/73199l.jpg',desc:'گروهی از دوستان راهی برای ارسال پیام به گذشته پیدا می‌کنند.'}
 ];
-let anime=[...starter,...JSON.parse(localStorage.getItem('bloomAnime')||'[]')];
-let favorites=JSON.parse(localStorage.getItem('bloomFav')||'[]'),watchlist=JSON.parse(localStorage.getItem('bloomWatch')||'[]');
+function readStore(key,fallback){try{const v=JSON.parse(localStorage.getItem(key)||'null');return v===null?fallback:v}catch{return fallback}}
+let anime=[...starter,...readStore('bloomAnime',[])];
+let localOverrides=readStore('bloomOverrides',{});
+let hiddenStarterIds=readStore('bloomHiddenStarter',[]);
+function applyOverrides(list){return list.filter(a=>!hiddenStarterIds.includes(a.id)).map(a=>localOverrides[String(a.id)]?({...a,...localOverrides[String(a.id)],id:a.id,cloudId:a.cloudId}):a)}
+let favorites=readStore('bloomFav',[]),watchlist=readStore('bloomWatch',[]);
+// Seasons and episodes are managed locally until matching Supabase tables/policies are configured.
+let seasons=readStore('bloomSeasons',[]), episodesData=readStore('bloomEpisodes',[]);
+function saveEpisodes(){localStorage.setItem('bloomSeasons',JSON.stringify(seasons));localStorage.setItem('bloomEpisodes',JSON.stringify(episodesData))}
+function safeText(v){return String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+function animeSeasons(animeId){return seasons.filter(x=>Number(x.animeId)===Number(animeId)).sort((a,b)=>a.number-b.number)}
+function seasonEpisodes(seasonId){return episodesData.filter(x=>Number(x.seasonId)===Number(seasonId)).sort((a,b)=>a.number-b.number)}
+function showEpisodePlayer(ep){
+ const title=ep.title||`قسمت ${ep.number}`; $('modalTitle').textContent=title;
+ const src=String(ep.videoUrl||'').trim();
+ let player='';
+ if(src && /\.(mp4|webm|ogg)(\?.*)?$/i.test(src)) player=`<div class="player-wrap"><video controls playsinline preload="metadata" src="${safeText(src)}">مرورگر شما از پخش ویدئو پشتیبانی نمی‌کند.</video></div>`;
+ else if(src && /^https:\/\//i.test(src)) player=`<div class="player-wrap"><iframe src="${safeText(src)}" title="${safeText(title)}" allow="autoplay; fullscreen; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
+ else player='<p class="admin-note">برای این قسمت هنوز لینک ویدئوی مستقیم یا پلیر مجاز ثبت نشده است.</p>';
+ $('modalContent').innerHTML=`${player}<p>${safeText(ep.description||'')}</p>${ep.subtitle?`<p class="admin-note">زیرنویس: ${safeText(ep.subtitle)}</p>`:''}${ep.dub?`<p class="admin-note">دوبله: ${safeText(ep.dub)}</p>`:''}<button class="ghost" id="backToAnime">بازگشت به صفحه انیمه</button>`;
+ $('backToAnime').onclick=()=>openAnime(Number(ep.animeId)); $('modal').classList.add('show');
+}
+function renderEpisodesForAnime(a){
+ const ss=animeSeasons(a.id);
+ if(!ss.length)return '<div class="season-block"><p class="sub">هنوز فصلی برای این انیمه ثبت نشده است.</p></div>';
+ return ss.map(se=>`<div class="season-block"><h3>فصل ${se.number}: ${safeText(se.title||'بدون عنوان')}</h3>${seasonEpisodes(se.id).map(ep=>`<button class="ghost episode-play" data-episode="${ep.id}">▶ قسمت ${ep.number}: ${safeText(ep.title||'بدون عنوان')}${ep.subtitle?' · زیرنویس':''}${ep.dub?' · دوبله':''}</button>`).join('')||'<p class="sub">قسمتی ثبت نشده است.</p>'}</div>`).join('');
+}
+
 let view='home',genreFilter='';
 const $=id=>document.getElementById(id);
-function save(){localStorage.setItem('bloomAnime',JSON.stringify(anime.filter(a=>!starter.some(s=>s.id===a.id))));localStorage.setItem('bloomFav',JSON.stringify(favorites));localStorage.setItem('bloomWatch',JSON.stringify(watchlist))}
+function save(){localStorage.setItem('bloomAnime',JSON.stringify(anime.filter(a=>!starter.some(s=>s.id===a.id) && !a.cloudId)));localStorage.setItem('bloomOverrides',JSON.stringify(localOverrides));localStorage.setItem('bloomHiddenStarter',JSON.stringify(hiddenStarterIds));localStorage.setItem('bloomFav',JSON.stringify(favorites));localStorage.setItem('bloomWatch',JSON.stringify(watchlist))}
 function card(a){return `<article class="anime-card" data-id="${a.id}"><img class="poster" src="${a.img}" alt="${a.fa}" loading="lazy" onerror="this.onerror=null;this.src='https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom'"><div class="cardbody"><h3>${a.fa||a.title}</h3><div class="sub">${a.title}</div><div class="cardfoot"><span class="rating">★ ${a.score}</span><span class="pill">${a.type==='movie'?'فیلم':'سریال'}</span></div></div></article>`}
 function filtered(){let list=[...anime];const q=$('searchInput').value.trim().toLowerCase();if(q)list=list.filter(a=>(a.title+' '+a.fa+' '+a.genre.join(' ')).toLowerCase().includes(q));if(genreFilter)list=list.filter(a=>a.genre.includes(genreFilter));if(view==='movies')list=list.filter(a=>a.type==='movie');if(view==='popular')list.sort((a,b)=>b.score-a.score);if(view==='new')list.sort((a,b)=>b.year-a.year);if(view==='favorites')list=list.filter(a=>favorites.includes(a.id));if(view==='watchlist')list=list.filter(a=>watchlist.includes(a.id));return list}
 function render(){let list=filtered();$('animeGrid').innerHTML=list.length?list.map(card).join(''):'<div class="empty">چیزی پیدا نشد؛ عبارت دیگه‌ای رو امتحان کن ✿</div>';$('resultCount').textContent=`${list.length} عنوان`;let titles={home:'✦ تازه‌های دنیای انیمه',all:'▦ آرشیو انیمه‌ها',movies:'▣ فیلم‌های سینمایی',popular:'♨ محبوب‌ترین‌ها',new:'✦ تازه‌واردها',favorites:'♡ علاقه‌مندی‌های من',watchlist:'▷ لیست تماشای من'};$('listTitle').textContent=(genreFilter?'# '+genreFilter+' — ':'')+(titles[view]||'آرشیو انیمه‌ها');$('popularGrid').innerHTML=[...anime].sort((a,b)=>b.score-a.score).slice(0,5).map(card).join('');$('rankList').innerHTML=[...anime].sort((a,b)=>b.score-a.score).slice(0,5).map((a,i)=>`<div class="rankrow"><span class="ranknum">${i+1}</span><img src="${a.img}" onerror="this.src='https://placehold.co/80x100/0b1730/ff70c8?text=Anime'"><div><b>${a.title}</b><small>★ ${a.score}</small></div></div>`).join('');}
 function toast(s){$('toast').textContent=s;$('toast').style.display='block';setTimeout(()=>$('toast').style.display='none',2600)}
-function openAnime(id){let a=anime.find(x=>x.id===id);if(!a)return;$('modalTitle').textContent=a.fa||a.title;$('modalContent').innerHTML=`<div class="detail"><img src="${a.img}" onerror="this.src='https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom'"><div><h2 style="margin-top:0">${a.title}</h2><div class="rating">★ ${a.score}　 ·　 ${a.year}</div><p>${a.desc||'توضیحات این عنوان هنوز اضافه نشده است.'}</p><p><b>ژانرها:</b> ${a.genre.join('، ')}</p><p><b>وضعیت:</b> ${a.status||'ثبت نشده'}　 <b>قسمت‌ها:</b> ${a.episodes||'نامشخص'}</p><button class="primary" id="favAction">${favorites.includes(id)?'♥ حذف از علاقه‌مندی‌ها':'♡ افزودن به علاقه‌مندی‌ها'}</button> <button class="ghost" id="watchAction">${watchlist.includes(id)?'✓ در لیست تماشا':'＋ افزودن به لیست تماشا'}</button><p class="sub" style="white-space:normal">پخش آنلاین در این نسخه هنوز فعال نیست؛ برای انتشار عمومی باید منبع ویدئوی دارای مجوز اضافه شود.</p></div></div>`;$('modal').classList.add('show');$('favAction').onclick=()=>{favorites=favorites.includes(id)?favorites.filter(x=>x!==id):[...favorites,id];save();openAnime(id);render()};$('watchAction').onclick=()=>{watchlist=watchlist.includes(id)?watchlist.filter(x=>x!==id):[...watchlist,id];save();openAnime(id);render()}}
+function openAnime(id){let a=anime.find(x=>x.id===id);if(!a)return;$('modalTitle').textContent=a.fa||a.title;$('modalContent').innerHTML=`<div class="detail"><img src="${a.img}" onerror="this.src='https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom'"><div><h2 style="margin-top:0">${a.title}</h2><div class="rating">★ ${a.score}　 ·　 ${a.year}</div><p>${a.desc||'توضیحات این عنوان هنوز اضافه نشده است.'}</p><p><b>ژانرها:</b> ${a.genre.join('، ')}</p><p><b>وضعیت:</b> ${a.status||'ثبت نشده'}　 <b>قسمت‌ها:</b> ${a.episodes||'نامشخص'}</p><button class="primary" id="favAction">${favorites.includes(id)?'♥ حذف از علاقه‌مندی‌ها':'♡ افزودن به علاقه‌مندی‌ها'}</button> <button class="ghost" id="watchAction">${watchlist.includes(id)?'✓ در لیست تماشا':'＋ افزودن به لیست تماشا'}</button><h3>فصل‌ها و قسمت‌ها</h3><div id="animeEpisodes">${renderEpisodesForAnime(a)}</div><p class="admin-note">لینک ویدئو فقط برای منبعی وارد شود که اجازه پخش آن را دارید. لینک MP4/WebM در پلیر داخلی باز می‌شود؛ لینک‌های دیگر در قاب تعبیه‌شده باز می‌شوند.</p></div></div>`;$('modal').classList.add('show');document.querySelectorAll('[data-episode]').forEach(btn=>btn.onclick=()=>{const ep=episodesData.find(x=>x.id===Number(btn.dataset.episode));if(ep)showEpisodePlayer(ep)});$('favAction').onclick=()=>{favorites=favorites.includes(id)?favorites.filter(x=>x!==id):[...favorites,id];save();openAnime(id);render()};$('watchAction').onclick=()=>{watchlist=watchlist.includes(id)?watchlist.filter(x=>x!==id):[...watchlist,id];save();openAnime(id);render()}}
 function setView(v){view=v;genreFilter='';document.querySelectorAll('[data-view]').forEach(b=>b.classList.toggle('active',b.dataset.view===v));render();if(innerWidth<700)$('sidebar').classList.remove('open');document.querySelector('main').scrollIntoView({behavior:'smooth',block:'start'})}
 document.addEventListener('click',e=>{let c=e.target.closest('.anime-card');if(c){openAnime(Number(c.dataset.id));return}let v=e.target.closest('[data-view]');if(v){setView(v.dataset.view);return}let g=e.target.closest('[data-genre]');if(g){genreFilter=g.dataset.genre;view='all';render();return}});
 $('searchInput').addEventListener('input',render);$('exploreBtn').onclick=()=>setView('all');$('randomBtn').onclick=()=>{const pick=anime[Math.floor(Math.random()*anime.length)];if(pick){toast('پیشنهاد شانسی: '+(pick.fa||pick.title));openAnime(pick.id)}};$('menuBtn').onclick=()=>$('sidebar').classList.toggle('open');$('closeModal').onclick=()=>$('modal').classList.remove('show');$('modal').onclick=e=>{if(e.target===$('modal'))$('modal').classList.remove('show')};$('joinBtn').onclick=()=>toast('حساب کاربری در مرحله‌های بعدی اضافه می‌شه 🌸');
-$('adminBtn').onclick=()=>{$('modalTitle').textContent='⚙ پنل مدیریت Anime Bloom';$('modalContent').innerHTML=`<p style="color:var(--muted);line-height:1.9">این پنل آزمایشی روی همین مرورگر کار می‌کند؛ فعلاً ورود امن و ذخیره‌سازی آنلاین ندارد. انیمه‌هایی که اضافه می‌کنی در همین دستگاه ذخیره می‌شوند.</p><form id="addForm"><label>نام انیمه (انگلیسی)<input class="field" name="title" required></label><label>نام فارسی<input class="field" name="fa" required></label><div class="admin-grid"><label>سال انتشار<input class="field" name="year" type="number" value="2025"></label><label>امتیاز<input class="field" name="score" type="number" min="0" max="10" step=".1" value="8.5"></label></div><label>لینک پوستر<input class="field" name="img" type="url" placeholder="https://..."></label><label>ژانرها (با ویرگول جدا کن)<input class="field" name="genre" value="اکشن, فانتزی"></label><label>نوع محتوا<select class="field" name="type"><option value="series">سریال</option><option value="movie">فیلم سینمایی</option></select></label><label>توضیحات<textarea class="field" name="desc" rows="3"></textarea></label><button class="primary" type="submit">＋ افزودن به آرشیو</button></form><hr style="border-color:var(--line);margin:20px 0"><h3>مدیریت عنوان‌های اضافه‌شده</h3><div id="adminList"></div>`;$('modal').classList.add('show');function listAdmin(){$('adminList').innerHTML=anime.filter(a=>!starter.some(s=>s.id===a.id)).map(a=>`<div style="display:flex;justify-content:space-between;gap:8px;padding:8px;border-bottom:1px solid var(--line)">${a.fa}<button class="close" data-delete="${a.id}">حذف</button></div>`).join('')||'<p class="sub">هنوز عنوانی اضافه نکردی.</p>'}listAdmin();$('addForm').onsubmit=e=>{e.preventDefault();let f=new FormData(e.target);anime.push({id:Date.now(),title:f.get('title'),fa:f.get('fa'),year:Number(f.get('year'))||2025,score:Number(f.get('score'))||8,genre:String(f.get('genre')).split(/[,،]/).map(s=>s.trim()).filter(Boolean),type:f.get('type'),status:'ثبت‌شده توسط مدیر',episodes:0,img:f.get('img')||'https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom',desc:f.get('desc')});save();render();e.target.reset();listAdmin();toast('انیمه به آرشیو اضافه شد ✿')};$('adminList').onclick=e=>{let b=e.target.closest('[data-delete]');if(!b)return;let id=Number(b.dataset.delete);anime=anime.filter(a=>a.id!==id);save();render();listAdmin();toast('عنوان حذف شد')}}
 // Enhanced local admin: add, edit, delete, JSON backup/restore.
 $('adminBtn').onclick=()=>{
  let editingId=null;
  $('modalTitle').textContent='⚙ پنل مدیریت Anime Bloom';
- $('modalContent').innerHTML=`<p class="admin-note">مدیریت عنوان‌ها در این نسخه روی همین مرورگر ذخیره می‌شود. برای نمایش تغییرات به همه‌ی بازدیدکننده‌ها، اتصال به پایگاه داده/سرویس آنلاین لازم است.</p>
+ $('modalContent').innerHTML=`<p class="admin-note">اگر اتصال Supabase و مجوزهای جدول درست باشند، تغییرات آنلاین ذخیره می‌شوند؛ در غیر این صورت تغییرات این مرورگر محلی می‌مانند. برای نمایش عمومی، RLS و ستون‌های جدول باید با این فرم سازگار باشند.</p>
  <form id="manageForm">
  <label>نام انیمه (انگلیسی)<input class="field" name="title" required maxlength="120" placeholder="مثلاً Frieren: Beyond Journey’s End"></label>
  <label>نام فارسی<input class="field" name="fa" required maxlength="120" placeholder="مثلاً فریرن"></label>
@@ -189,19 +248,38 @@ $('adminBtn').onclick=()=>{
  <label>خلاصه داستان<textarea class="field" name="desc" rows="3" maxlength="1500" placeholder="خلاصه‌ی کوتاه داستان..."></textarea></label>
  <div class="admin-tools"><button class="primary" type="submit" id="saveAnimeBtn">＋ افزودن به آرشیو</button><button type="button" id="cancelEditBtn" style="display:none">لغو ویرایش</button></div>
  </form><hr style="border-color:var(--line);margin:18px 0"><h3>عنوان‌های قابل مدیریت</h3><div id="adminList"></div>
+ <hr style="border-color:var(--line);margin:18px 0"><h3>مدیریت فصل و قسمت</h3><p class="admin-note">ابتدا انیمه را انتخاب کن، فصل بساز و سپس قسمت‌ها و لینک پخش مجاز را ثبت کن. این اطلاعات فعلاً روی همین مرورگر ذخیره می‌شوند؛ برای اشتراک بین کاربران باید جدول‌های seasons و episodes و سیاست‌های RLS در Supabase تنظیم شوند.</p>
+ <label>انتخاب انیمه<select class="field" id="episodeAnimeSelect"></select></label>
+ <form id="seasonForm"><label>نام فصل<input class="field" name="title" maxlength="120" placeholder="مثلاً فصل اول"></label><label>شماره فصل<input class="field" name="number" type="number" min="1" value="1" required></label><button class="primary" type="submit">＋ افزودن فصل</button></form>
+ <div id="seasonAdminList"></div>
+ <form id="episodeForm"><h4>افزودن قسمت به فصل</h4><label>فصل<select class="field" name="seasonId" id="episodeSeasonSelect" required></select></label><label>شماره قسمت<input class="field" name="number" type="number" min="1" value="1" required></label><label>عنوان قسمت<input class="field" name="title" maxlength="160" placeholder="عنوان اختیاری"></label><label>لینک ویدئو / پلیر مجاز<input class="field" name="videoUrl" type="url" placeholder="https://..." required></label><label>توضیحات<textarea class="field" name="description" rows="2"></textarea></label><button class="primary" type="submit">＋ افزودن قسمت</button></form><div id="episodeAdminList"></div>
  <div class="admin-tools"><button type="button" id="exportBtn">⬇ دریافت نسخه پشتیبان (JSON)</button><button type="button" id="importBtn">⬆ بازیابی نسخه پشتیبان</button><input id="importFile" type="file" accept="application/json,.json" hidden></div>`;
  $('modal').classList.add('show');
  const form=$('manageForm');
  function resetForm(){editingId=null;form.reset();form.elements.year.value=2025;form.elements.score.value=8.5;form.elements.genre.value='اکشن، فانتزی';$('saveAnimeBtn').textContent='＋ افزودن به آرشیو';$('cancelEditBtn').style.display='none'}
  function refreshList(){ $('adminList').innerHTML=anime.map(a=>`<div class="admin-row"><div><b>${String(a.fa||a.title).replace(/[<>]/g,'')}</b><small>${String(a.title).replace(/[<>]/g,'')} · ${a.year} · ★ ${a.score}</small></div><button class="edit-btn" data-edit="${a.id}">ویرایش</button><button class="danger" data-delete="${a.id}">حذف</button></div>`).join('')||'<p class="sub">آرشیو خالی است.</p>'; }
  refreshList();
- form.onsubmit=async e=>{e.preventDefault();const f=new FormData(form);const item={id:editingId??Date.now(),title:String(f.get('title')).trim(),fa:String(f.get('fa')).trim(),year:Number(f.get('year')),score:Number(f.get('score')),episodes:Number(f.get('episodes'))||0,genre:String(f.get('genre')).split(/[,،]/).map(x=>x.trim()).filter(Boolean),type:f.get('type'),status:String(f.get('status')),img:String(f.get('img')).trim()||'https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom',desc:String(f.get('desc')).trim()};
+ const animeSelect=$('episodeAnimeSelect'), seasonSelect=$('episodeSeasonSelect');
+ function refreshEpisodeManager(){
+   const selected=Number(animeSelect.value||anime[0]?.id||0); animeSelect.innerHTML=anime.map(a=>`<option value="${a.id}" ${a.id===selected?'selected':''}>${safeText(a.fa||a.title)}</option>`).join('');
+   const ss=animeSeasons(selected); seasonSelect.innerHTML=ss.map(se=>`<option value="${se.id}">فصل ${se.number} — ${safeText(se.title||'بدون عنوان')}</option>`).join('');
+   $('seasonAdminList').innerHTML=ss.map(se=>`<div class="episode-row"><div><b>فصل ${se.number}: ${safeText(se.title||'بدون عنوان')}</b><small>${seasonEpisodes(se.id).length} قسمت</small></div><div class="episode-actions"><button data-del-season="${se.id}">حذف فصل</button></div></div>`).join('')||'<p class="sub">هنوز فصلی ثبت نشده است.</p>';
+   const eps=seasonEpisodes(Number(seasonSelect.value||0)); $('episodeAdminList').innerHTML=eps.map(ep=>`<div class="episode-row"><div><b>قسمت ${ep.number}: ${safeText(ep.title||'بدون عنوان')}</b><small>${safeText(ep.videoUrl||'بدون لینک')}</small></div><div class="episode-actions"><button data-play-admin="${ep.id}">آزمایش پخش</button><button data-del-episode="${ep.id}">حذف</button></div></div>`).join('')||'<p class="sub">برای فصل انتخاب‌شده قسمتی ثبت نشده است.</p>';
+ }
+ animeSelect.onchange=refreshEpisodeManager; seasonSelect.onchange=refreshEpisodeManager;
+ $('seasonForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.currentTarget);const animeId=Number(animeSelect.value);const number=Number(f.get('number'));if(seasons.some(x=>Number(x.animeId)===animeId&&x.number===number)){alert('این شماره فصل قبلاً ثبت شده است.');return}seasons.push({id:Date.now()+Math.floor(Math.random()*999),animeId,number,title:String(f.get('title')).trim()});saveEpisodes();e.currentTarget.reset();e.currentTarget.elements.number.value=1;refreshEpisodeManager();toast('فصل ذخیره شد روی همین مرورگر');};
+ $('episodeForm').onsubmit=e=>{e.preventDefault();const f=new FormData(e.currentTarget);const seasonId=Number(f.get('seasonId'));if(!seasonId){alert('اول یک فصل بساز و انتخاب کن.');return}const number=Number(f.get('number'));if(episodesData.some(x=>Number(x.seasonId)===seasonId&&x.number===number)){alert('این شماره قسمت قبلاً ثبت شده است.');return}const se=seasons.find(x=>x.id===seasonId);episodesData.push({id:Date.now()+Math.floor(Math.random()*999),animeId:se.animeId,seasonId,number,title:String(f.get('title')).trim(),videoUrl:String(f.get('videoUrl')).trim(),description:String(f.get('description')).trim()});saveEpisodes();e.currentTarget.reset();e.currentTarget.elements.number.value=1;refreshEpisodeManager();toast('قسمت ذخیره شد روی همین مرورگر');};
+ $('seasonAdminList').onclick=e=>{const b=e.target.closest('[data-del-season]');if(!b)return;const id=Number(b.dataset.delSeason);if(!confirm('این فصل و تمام قسمت‌های آن حذف شوند؟'))return;seasons=seasons.filter(x=>x.id!==id);episodesData=episodesData.filter(x=>x.seasonId!==id);saveEpisodes();refreshEpisodeManager()};
+ $('episodeAdminList').onclick=e=>{const d=e.target.closest('[data-del-episode]'),pbtn=e.target.closest('[data-play-admin]');if(d){episodesData=episodesData.filter(x=>x.id!==Number(d.dataset.delEpisode));saveEpisodes();refreshEpisodeManager()}if(pbtn){const ep=episodesData.find(x=>x.id===Number(pbtn.dataset.playAdmin));if(ep)showEpisodePlayer(ep)}};
+ refreshEpisodeManager();
+ form.onsubmit=async e=>{e.preventDefault();const f=new FormData(form);const item={id:editingId??(Date.now()+Math.floor(Math.random()*1000)),title:String(f.get('title')).trim(),fa:String(f.get('fa')).trim(),year:Number(f.get('year')),score:Number(f.get('score')),episodes:Number(f.get('episodes'))||0,genre:String(f.get('genre')).split(/[,،]/).map(x=>x.trim()).filter(Boolean),type:f.get('type'),status:String(f.get('status')),img:String(f.get('img')).trim()||'https://placehold.co/300x400/0b1730/ff70c8?text=Anime+Bloom',desc:String(f.get('desc')).trim()};
  try {
    if (cloudReady) {
      const payload=toCloudRow(item);
      if(editingId!==null) {
        const old=anime.find(a=>a.id===editingId);
        if(old?.cloudId) await sbRequest('/anime?id=eq.'+encodeURIComponent(old.cloudId),{method:'PATCH',headers:{Prefer:'return=minimal'},body:JSON.stringify(payload)});
+       else if(starter.some(s=>s.id===editingId)){ localOverrides[String(editingId)]={...item}; anime=anime.map(a=>a.id===editingId?item:a); }
        else { await sbRequest('/anime',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify(payload)}); }
      } else {
        await sbRequest('/anime',{method:'POST',headers:{Prefer:'return=representation'},body:JSON.stringify(payload)});
@@ -209,7 +287,7 @@ $('adminBtn').onclick=()=>{
      await loadCloudAnime();
      toast('تغییرات در Supabase ذخیره شد ✿');
    } else {
-     if(editingId!==null){anime=anime.map(a=>a.id===editingId?item:a);toast('ذخیره آنلاین فعال نیست؛ تغییر فقط محلی است')}
+     if(editingId!==null){if(starter.some(s=>s.id===editingId))localOverrides[String(editingId)]={...item};anime=anime.map(a=>a.id===editingId?item:a);toast('تغییرات ذخیره شد؛ اتصال آنلاین فعال نیست')}
      else{anime.push(item);toast('اتصال دیتابیس آماده نیست؛ انیمه فقط محلی اضافه شد')}
    }
    save();render();refreshList();resetForm();
@@ -218,12 +296,13 @@ $('adminBtn').onclick=()=>{
  }
 };
  $('cancelEditBtn').onclick=resetForm;
- $('adminList').onclick=e=>{const eb=e.target.closest('[data-edit]'),db=e.target.closest('[data-delete]');if(eb){const a=anime.find(x=>x.id===Number(eb.dataset.edit));if(!a)return;editingId=a.id;for(const k of ['title','fa','year','score','episodes','status','img','type','desc'])form.elements[k].value=a[k]??'';form.elements.genre.value=(a.genre||[]).join('، ');$('saveAnimeBtn').textContent='ذخیره‌ی ویرایش';$('cancelEditBtn').style.display='inline-block';form.scrollIntoView({behavior:'smooth',block:'start'});return}if(db){const id=Number(db.dataset.delete);const a=anime.find(x=>x.id===id);if(!a)return;if(!confirm(`«${a.fa||a.title}» حذف شود؟`))return;(async()=>{try{const row=anime.find(x=>x.id===id);if(cloudReady&&row?.cloudId){await sbRequest('/anime?id=eq.'+encodeURIComponent(row.cloudId),{method:'DELETE',headers:{Prefer:'return=minimal'}});await loadCloudAnime()}else{anime=anime.filter(x=>x.id!==id)}favorites=favorites.filter(x=>x!==id);watchlist=watchlist.filter(x=>x!==id);save();render();refreshList();if(editingId===id)resetForm();toast('عنوان حذف شد')}catch(err){alert('حذف آنلاین انجام نشد: '+err.message)}})()}};
- $('exportBtn').onclick=()=>{const blob=new Blob([JSON.stringify({anime:anime.filter(a=>!starter.some(s=>s.id===a.id)),favorites,watchlist},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='anime-bloom-backup.json';a.click();URL.revokeObjectURL(url);toast('نسخه پشتیبان آماده شد')};
+ $('adminList').onclick=e=>{const eb=e.target.closest('[data-edit]'),db=e.target.closest('[data-delete]');if(eb){const a=anime.find(x=>x.id===Number(eb.dataset.edit));if(!a)return;editingId=a.id;for(const k of ['title','fa','year','score','episodes','status','img','type','desc'])form.elements[k].value=a[k]??'';form.elements.genre.value=(a.genre||[]).join('، ');$('saveAnimeBtn').textContent='ذخیره‌ی ویرایش';$('cancelEditBtn').style.display='inline-block';form.scrollIntoView({behavior:'smooth',block:'start'});return}if(db){const id=Number(db.dataset.delete);const a=anime.find(x=>x.id===id);if(!a)return;if(!confirm(`«${a.fa||a.title}» حذف شود؟`))return;(async()=>{try{const row=anime.find(x=>x.id===id);if(cloudReady&&row?.cloudId){await sbRequest('/anime?id=eq.'+encodeURIComponent(row.cloudId),{method:'DELETE',headers:{Prefer:'return=minimal'}});await loadCloudAnime()}else{if(starter.some(s=>s.id===id)){hiddenStarterIds=[...new Set([...hiddenStarterIds,id])];delete localOverrides[String(id)]}anime=anime.filter(x=>x.id!==id)}favorites=favorites.filter(x=>x!==id);watchlist=watchlist.filter(x=>x!==id);save();render();refreshList();if(editingId===id)resetForm();toast('عنوان حذف شد')}catch(err){alert('حذف آنلاین انجام نشد: '+err.message)}})()}};
+ $('exportBtn').onclick=()=>{const blob=new Blob([JSON.stringify({anime:anime.filter(a=>!starter.some(s=>s.id===a.id)),favorites,watchlist,seasons,episodes:episodesData},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='anime-bloom-backup.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);toast('نسخه پشتیبان آماده شد')};
  $('importBtn').onclick=()=>$('importFile').click();
- $('importFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());if(!data||!Array.isArray(data.anime))throw new Error('bad');if(!confirm('اطلاعات پشتیبان به آرشیو اضافه شود؟'))return;const ids=new Set(anime.map(a=>a.id));data.anime.forEach(a=>{if(a&&a.title&&!ids.has(a.id)){anime.push({...a,id:Number(a.id)||Date.now()+Math.random(),genre:Array.isArray(a.genre)?a.genre:[]})}});if(Array.isArray(data.favorites))favorites=[...new Set([...favorites,...data.favorites])];if(Array.isArray(data.watchlist))watchlist=[...new Set([...watchlist,...data.watchlist])];save();render();refreshList();toast('بازیابی انجام شد')}catch(_){alert('فایل پشتیبان معتبر نیست.')}finally{e.target.value=''}};
+ $('importFile').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{const data=JSON.parse(await file.text());if(!data||!Array.isArray(data.anime))throw new Error('bad');if(!confirm('اطلاعات پشتیبان به آرشیو اضافه شود؟'))return;const ids=new Set(anime.map(a=>a.id));data.anime.forEach(a=>{if(a&&a.title&&!ids.has(a.id)){anime.push({...a,id:Number(a.id)||Date.now()+Math.random(),genre:Array.isArray(a.genre)?a.genre:[]})}});if(Array.isArray(data.favorites))favorites=[...new Set([...favorites,...data.favorites])];if(Array.isArray(data.watchlist))watchlist=[...new Set([...watchlist,...data.watchlist])];if(Array.isArray(data.seasons))seasons=[...seasons,...data.seasons.filter(x=>!seasons.some(y=>y.id===x.id))];if(Array.isArray(data.episodes))episodesData=[...episodesData,...data.episodes.filter(x=>!episodesData.some(y=>y.id===x.id))];saveEpisodes();save();render();refreshList();refreshEpisodeManager();toast('بازیابی انجام شد')}catch(_){alert('فایل پشتیبان معتبر نیست.')}finally{e.target.value=''}};
 };
 
 render();
+(async()=>{ await loadCloudAnime(); await loadCloudEpisodes(); render(); })();
 </script>
 </body></html>
